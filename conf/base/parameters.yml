@@ -1,3 +1,28 @@
 de:
   dt_col: "datetime_utc_from"
   lags_hours: [48, 72, 168]
+
+train:
+  test_size: 0.2
+  seed: 42
+
+
+  torch:
+    max_epochs: 400
+    lr: 0.05
+    batch_size: 4096
+    patience: 25
+
+    enet_alpha: [0.0001, 0.001, 0.01, 0.1]
+    enet_l1_ratio: [0.0, 0.2, 0.5, 0.8, 1.0]   # 0=ridge, 1=lasso
+
+  hgbr:
+    max_depth: 6
+    learning_rate: 0.05
+    max_iter: 500
+    min_samples_leaf: 50
+    l2_regularization: 0.0
+
+
+test:
+  backtest_days: 60

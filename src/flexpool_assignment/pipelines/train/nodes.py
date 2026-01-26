@@ -1,104 +1,216 @@
 from __future__ import annotations
-from typing import Any
 
 import numpy as np
 import pandas as pd
-import torch
+from typing import Tuple, Dict, Any, List
+from flexpool_assignment.common.ml_utils import set_seed, StandardScaler, fit_torch_linear
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import HistGradientBoostingRegressor
 
-import flexpool_assignment.common.ml_utils as ml_utils 
 
-def _train_one_epoch(
-        model: torch.nn.Module,
-        loader: torch.utils.data.DataLoader,
-        optimizer: torch.optim.Optimizer,
-        loss_fn: torch.nn.Module) -> float: 
-    model.train() # the model is now in training mode
-    total_loss, total_n = 0.0, 0
-    for xb, yb in loader: 
-        # 1) Foward üass: calcuate predictions given the params
-        y_hat = model(xb)
-        # 2) how bad ae these with respect to a subset of the data train set?
-        loss = loss_fn(y_hat, yb)
+def split_train_val(
+        supervised_table: pd.DataFrame, 
+        params: Dict[str,Any]) -> Dict[str,Any]:
+    test_size = float(params['test_size'])
 
-        # 3) given answer to 2, compute gradients of loss func. wrt param space \theta
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+    df = supervised_table.sort_values('datetime_local').reset_index(drop=True)
 
-        # recording (not): prevnt the tracking of graients in the plot 
-        bs = xb.shape[0]
-        total_loss += float(loss.detach().cpu().item()) * bs
-        total_n += bs
+    ycol = "consumption_MWh"
+
+    feature_cols = (df.columns.
+                    difference(["datetime_utc_from","datetime_local", ycol]).
+                    tolist())
     
-    return total_loss / total_n 
+    df_model = (
+        df.dropna(subset = feature_cols + [ycol]).
+        reset_index(drop = True)
+    )
 
-def train_torch_linear(
-        X_train: pd.DataFrame,
-        Y_train: pd.DataFrame, 
-        feature_scaler: dict[str, Any],
-        seed: int, 
-        batch_size: int, 
-        epochs: int, 
-        lr: float,
-        weight_decay: float) -> dict:
-     torch.manual_seed(seed) 
-     device = torch.device("cpu")
+    X_train, X_val, Y_train, Y_val = train_test_split(
+        df_model[feature_cols].to_numpy(dtype=np.float32),
+        df_model[ycol].to_numpy(dtype=np.float32),
+        test_size=test_size,
+        shuffle=False
+    )
 
-     X_train_t = ml_utils.apply_scaler(X_train, feature_scaler)
-     Y_train_t = ml_utils.to_np_float32(Y_train)
+    baseline_cols = ["datetime_local", ycol] + [c for c in df_model.columns if c.startswith("lag_")]
+    df_for_baselines = df_model[baseline_cols].reset_index(drop=True)
 
-     model = torch.nn.Linear(X_train_t.shape[1],1).to(device)
-     loss_fn = torch.nn.MSELoss()
-     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+    return {
+        "feature_cols": feature_cols,
+        "X_train": X_train,
+        "Y_train": Y_train,
+        "X_val": X_val,
+        "Y_val": Y_val,
+        "df_for_baselines": df_for_baselines,
+    }
 
-     dataset = torch.utils.data.TensorDataset(
-         torch.tensor(X_train_t, device=device),
-         torch.tensor(Y_train_t, device=device))
-     loader = torch.utils.data.DataLoader(
-         dataset, batch_size=batch_size, shuffle=True, drop_last=False)
-     
-     for _ in range(epochs):
-         _ = _train_one_epoch(model = model, loader = loader, 
-                              optimizer = optimizer, loss_fn = loss_fn)    
-     return model.state_dict()
-
-def predict_baseline_torch_linear(
-        X_train: pd.DataFrame,
-        Y_train: pd.DataFrame,
-        X_val: pd.DataFrame, 
-        Y_val: pd.DataFrame,
-        X_test: pd.DataFrame,
-        Y_test: pd.DataFrame,
-        features_scaler: dict[str, Any],
-        torch_linear_state: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
+def train_linear_ols_torch(
+        split_data : Dict[str,Any],
+        params: Dict[str,Any]) -> Dict[str,Any]:
     
-    Y_train_t = ml_utils.to_np_float32(Y_train)
-    mu = float(Y_train_t.mean())
+    set_seed(int(params['seed']))
 
-    Yva, Yve = ml_utils.to_np_float32(Y_val), ml_utils.to_np_float32(Y_test)
+    X_train, Y_train = split_data['X_train'], split_data['Y_train']
+    X_val, Y_val = split_data["X_val"], split_data['Y_val']
+    feature_cols = split_data["feature_cols"]
+
+    scaler = StandardScaler()
+    Xtr = scaler.fit_transform(X_train).astype(np.float32)
+    Xva = scaler.transform(X_val).astype(np.float32)
+
+    t = params['torch']
+
+    art, val_mae = fit_torch_linear(
+        Xtr, Y_train.astype(np.float32),
+        Xva, Y_val.astype(np.float32),
+        l1=0.0, l2=0.0,
+        lr=float(t["lr"]),
+        max_epochs=int(t["max_epochs"]),
+        patience=int(t["patience"]),
+        seed=int(params["seed"]),
+    )
+
+    return {
+        "model_name": "torch_ols",
+        "model_type": "torch_linear",
+        "val_mae": float(val_mae),
+        "feature_cols": feature_cols,
+        "scaler": scaler,
+        "torch": art,
+    }
+
+def train_ridge_lasso_enet_torch(
+        split_data : Dict[str,Any],
+        params : Dict[str,Any]) -> Dict[str,Any]:
     
-    mean_val, mean_test = np.full_like(Yva, mu),  np.full_like(Yve, mu)
+    set_seed(int(params['seed']))
 
-    Xva, Xte = ml_utils.apply_scaler(X_val, features_scaler), ml_utils.apply_scaler(X_test, features_scaler)
+    X_train, Y_train = split_data["X_train"], split_data["Y_train"]
+    X_val, Y_val = split_data["X_val"], split_data["Y_val"]
+    feature_cols = split_data["feature_cols"]
 
-    model = torch.nn.Linear(Xva.shape[1],1)
-    model.load_state_dict(torch_linear_state)
-    model.eval()
+    scaler = StandardScaler()
+    Xtr = scaler.fit_transform(X_train).astype(np.float32)
+    Xva = scaler.transform(X_val).astype(np.float32)
 
-    with torch.no_grad():
-        lin_val = model(torch.tensor(Xva)).numpy()
-        lin_test = model(torch.tensor(Xte)).numpy()
+    Ytr = Y_train.astype(np.float32)
+    Yva = Y_val.astype(np.float32)
 
-    preds_val = pd.DataFrame({
-        "Y_true": Yva.ravel(), 
-        "mean_baseline": mean_val.ravel(),
-        "torch_linear": lin_val.ravel()
-    })
+    t = params["torch"]
+    alphas = t["enet_alpha"]
+    ratios = t["enet_l1_ratio"]
 
-    preds_test = pd.DataFrame({
-        "Y_true": Yve.ravel(),
-        "mean_baseline": mean_test.ravel(),
-        "torch_linear": lin_test.ravel()
-    })
+    rows: List[Dict[str, Any]] = []
+    best = {"name": None, "mae": float("inf"), "torch_art": None}
 
-    return preds_val, preds_test
+    for alpha in alphas:
+        for r in ratios:
+            l1 = float(alpha) * float(r)
+            l2 = float(alpha) * float(1.0 - float(r))
+
+            torch_art, val_mae = fit_torch_linear(
+                Xtr, Ytr, Xva, Yva,
+                l1=l1, l2=l2,
+                lr=float(t["lr"]),
+                max_epochs=int(t["max_epochs"]),
+                patience=int(t["patience"]),
+                seed=int(params["seed"]),
+            )
+
+            name = f"torch_enet_alpha={alpha}_l1r={r}"
+            rows.append({"model": name, "val_mae": float(val_mae), "alpha": float(alpha), "l1_ratio": float(r)})
+
+            if val_mae < best["mae"]:
+                best = {"name": name, "mae": float(val_mae), "torch_art": torch_art}
+
+    return {
+        "model_name": best["name"],
+        "model_type": "torch_linear",
+        "val_mae": best["mae"],
+        "feature_cols": feature_cols,
+        "scaler": scaler,
+        "torch": best["torch_art"],
+        "grid_results": rows,
+    }
+
+
+def train_hgbr_sklearn(
+        split_data: Dict[str,Any], 
+        params: Dict[str,Any])-> Dict[str,Any]:
+    
+    seed = int(params['seed'])
+    X_train, Y_train = split_data["X_train"], split_data["Y_train"]
+    X_val, Y_val = split_data["X_val"], split_data["Y_val"]
+    feature_cols = split_data["feature_cols"]
+
+    h = params['hgbr']
+    model = HistGradientBoostingRegressor(
+        max_depth=int(h['max_depth']),
+        learning_rate=float(h['learning_rate']),
+        max_iter=int(h["max_iter"]),
+        min_samples_leaf=int(h["min_samples_leaf"]),
+        l2_regularization=float(h["l2_regularization"]),
+        random_state=seed,
+    )
+
+    model.fit(X_train, Y_train)
+    pred = model.predict(X_val).astype(np.float32)
+    val_mae = float(np.mean(np.abs(pred-Y_val)))
+
+    return {
+        "model_name": "sklearn_hgbr",
+        "model_type": "sklearn_hgbr",
+        "val_mae": val_mae,
+        "feature_cols": feature_cols,
+        "sklearn": {"model": model}
+    }
+
+def compare_and_select(
+        ols_artifacts : Dict[str,Any],
+        enet_artifacts: Dict[str, Any],
+        hgbr_artifacts: Dict[str,Any],) -> Tuple[Dict[str,Any], pd.DataFrame]:
+    
+    rows = [
+        {"model": ols_artifacts["model_name"], "val_mae": float(ols_artifacts["val_mae"]), "type": ols_artifacts["model_type"]},
+        {"model": enet_artifacts["model_name"], "val_mae": float(enet_artifacts["val_mae"]), "type": enet_artifacts["model_type"]},
+        {"model": hgbr_artifacts["model_name"], "val_mae": float(hgbr_artifacts["val_mae"]), "type": hgbr_artifacts["model_type"]},
+    ]
+
+    metrics = (
+        pd.DataFrame(rows)
+        .sort_values("val_mae", ascending=True)
+        .reset_index(drop=True)
+        .assign(rank=lambda d: np.arange(1, len(d) + 1))
+        [["rank", "model", "type", "val_mae"]]
+    )
+
+    winner_name = metrics.iloc[0]["model"]
+    if winner_name == ols_artifacts["model_name"]:
+        best = ols_artifacts
+    elif winner_name == enet_artifacts["model_name"]:
+        best = enet_artifacts
+    else:
+        best = hgbr_artifacts
+
+    bundle: Dict[str, Any] = {
+        "best_model_name": best["model_name"],
+        "best_model_type": best["model_type"],
+        "val_mae": float(best["val_mae"]),
+        "feature_cols": best["feature_cols"],
+    }
+
+    if best["model_type"] == "torch_linear":
+        bundle.update(
+            {
+                "scaler": best.get("scaler"),
+                "torch": best.get("torch"),
+            }
+        )
+    else:
+        bundle.update(
+            {
+                "sklearn": best.get("sklearn"),
+            }
+        )
+    return bundle, metrics

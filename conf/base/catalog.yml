@@ -9,3 +9,36 @@ preprocessed_data:
 supervised_table:
   type: pandas.ParquetDataset
   filepath: data/05_model_input/supervised.parquet
+
+split_data:
+  type: pickle.PickleDataset
+  filepath: data/05_model_input/split_data.pkl
+
+model_artifacts:
+  type: pickle.PickleDataset
+  filepath: data/06_models/model_artifacts.pkl
+
+
+ols_artifacts:
+  type: pickle.PickleDataset
+  filepath: data/06_models/ols_artifacts.pkl
+
+enet_artifacts:
+  type: pickle.PickleDataset
+  filepath: data/06_models/enet_artifacts.pkl
+
+hgbr_artifacts:
+  type: pickle.PickleDataset
+  filepath: data/06_models/hgbr_artifacts.pkl
+
+metrics_table:
+  type: pandas.CSVDataset
+  filepath: data/08_reporting/metrics_table.csv
+
+backtest_daily:
+  type: pandas.CSVDataset
+  filepath: data/08_reporting/backtest_daily.csv
+
+backtest_hourly:
+  type: pandas.ParquetDataset
+  filepath: data/08_reporting/backtest_hourly.parquet
