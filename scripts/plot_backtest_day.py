@@ -16,7 +16,7 @@ daily_mae = (
       .sort_values("mae")
       .reset_index(drop=True)
 )
-
+#the median day - what happens? how is the model doing?
 chosen_day = daily_mae.iloc[len(daily_mae) // 2]["forecast_day"]
 
 df_day = (
@@ -57,5 +57,8 @@ fig.update_layout(
     template="plotly_white",
     margin=dict(l=40, r=40, t=60, b=40),
 )
-
+# see the plot - the model (hist grad boost regressor) seems to
+# do what we want it in theory - it is aware of stress hours during 
+# the day, hence morning and evening. 
 fig.show()
+

@@ -30,10 +30,12 @@ def split_train_val(
         df_model[feature_cols].to_numpy(dtype=np.float32),
         df_model[ycol].to_numpy(dtype=np.float32),
         test_size=test_size,
-        shuffle=False
-    )
+        shuffle=False # we cannot shuffle, because partition must respect 
+    )# order over time, otherwise we could use the future to predict the past
+    # and the model gets meaningless - load forecasting is Causal & NOT i.i.d.
 
     baseline_cols = ["datetime_local", ycol] + [c for c in df_model.columns if c.startswith("lag_")]
+    #baseline model is the one with lags only, autoregressive
     df_for_baselines = df_model[baseline_cols].reset_index(drop=True)
 
     return {
@@ -99,7 +101,8 @@ def train_ridge_lasso_enet_torch(
 
     t = params["torch"]
     alphas = t["enet_alpha"]
-    ratios = t["enet_l1_ratio"]
+    ratios = t["enet_l1_ratio"] #both ridge and lasso are here, for extreme
+    #values of ratio 0 and 1
 
     rows: List[Dict[str, Any]] = []
     best = {"name": None, "mae": float("inf"), "torch_art": None}
@@ -145,6 +148,11 @@ def train_hgbr_sklearn(
     feature_cols = split_data["feature_cols"]
 
     h = params['hgbr']
+    # an ensamble of decision trees, where each tree is added
+    # sequentially, and it is trained to approcximate the negative 
+    # gradient (the residual) of the loss function with respec to the 
+    # last iteration set of parameter, hence it progressively 
+    # reduces prediction error until convergence or early stop
     model = HistGradientBoostingRegressor(
         max_depth=int(h['max_depth']),
         learning_rate=float(h['learning_rate']),
@@ -177,6 +185,10 @@ def compare_and_select(
         {"model": hgbr_artifacts["model_name"], "val_mae": float(hgbr_artifacts["val_mae"]), "type": hgbr_artifacts["model_type"]},
     ]
 
+    # MAE -why MAE? because the average absolute forecast error 
+    # is the same unit of electricity consump. itself (MWh) 
+    # hence it is readily interpretable both operationally 
+    # and economically
     metrics = (
         pd.DataFrame(rows)
         .sort_values("val_mae", ascending=True)

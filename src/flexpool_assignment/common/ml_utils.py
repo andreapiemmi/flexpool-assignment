@@ -78,9 +78,9 @@ def fit_torch_linear(
 
         # penalties (exclude bias)
         w = model.linear.weight
-        if l2 > 0:
+        if l2 > 0: #ridge
             loss = loss + l2 * w.pow(2).sum()
-        if l1 > 0:
+        if l1 > 0: #lasso
             loss = loss + l1 * w.abs().sum()
 
         loss.backward()
