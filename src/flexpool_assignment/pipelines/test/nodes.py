@@ -67,8 +67,8 @@ def backtest_winner_model(
 
     for fday in chosen_forecast_days:
         # forecast day = fday; origin day is fday - 1 day (forecast made at origin 10:00)
-        # we don't actually use origin 10:00 in features because you designed lags >=48h (safe),
-        # but we keep the narrative consistent.
+        # we don't actually use  10:00 in features because I set lags >=48h (safe),
+        # but I keep consistent
         day_mask = df["date_local"] == fday
         df_day = df[day_mask].reset_index(drop=True)
 
